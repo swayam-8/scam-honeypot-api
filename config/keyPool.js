@@ -8,6 +8,7 @@ class KeyPool {
     }
 
     init() {
+        // Automatically find all keys from GEMINI_KEY_1 to GEMINI_KEY_50
         for (let i = 1; i <= 50; i++) {
             const key = process.env[`GEMINI_KEY_${i}`];
             if (key && key.trim() !== "") {
@@ -22,16 +23,17 @@ class KeyPool {
         }
     }
 
-    // --- 👇 THIS WAS MISSING 👇 ---
+    // --- 👇 THIS WAS MISSING. I ADDED IT NOW. 👇 ---
     getAllKeys() {
         return this.keys;
     }
-    // -----------------------------
+    // ---------------------------------------------
 
     getKeyForSession(sessionId) {
         if (this.usedKeys.has(sessionId)) {
             return this.usedKeys.get(sessionId);
         }
+        // Simple random load balancing
         const key = this.keys[Math.floor(Math.random() * this.keys.length)];
         this.usedKeys.set(sessionId, key);
         return key;
