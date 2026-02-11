@@ -1,12 +1,13 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const connectDB = require('./config/db');
+const connectDB = require('./config/db'); // <--- Handles Local vs Cloud DB automatically
 const sessionManager = require('./services/sessionManager');
 const warmUpKeys = require('./utils/warmUp');
-const logger = require('./utils/logger'); // ✅ Added Logger Import
+const logger = require('./utils/logger'); // <--- Records to audit.log
 
 const app = express();
+// Render assigns a port automatically, so we use process.env.PORT
 const PORT = process.env.PORT || 8080;
 
 // Middleware
@@ -16,7 +17,6 @@ app.use(bodyParser.json());
 // Ensures we NEVER wait longer than 4.5s (Guarantees we don't score 0)
 app.use((req, res, next) => {
     res.setTimeout(4500, () => {
-        // ✅ Use logger.error for timeouts
         logger.error(`[TIMEOUT] Request ${req.body.sessionId || 'unknown'} took too long.`);
         
         if (!res.headersSent) {
@@ -32,21 +32,21 @@ app.use((req, res, next) => {
 // 2. Main Honeypot Route
 app.post('/api/honeypot', async (req, res) => {
     try {
+        // Security Check
         const apiKey = req.headers['x-api-key'];
         if (apiKey !== process.env.API_SECRET_KEY) {
-            // ✅ Use logger.warn for security issues
             logger.warn(`Unauthorized access attempt from IP: ${req.ip}`);
             return res.status(401).json({ error: "Unauthorized" });
         }
 
-        // Pass request to the "Brain"
+        // Pass request to the "Brain" (Session Manager)
         const result = await sessionManager.processRequest(req.body);
         
         // Send Response (Must be < 2s)
         res.json(result);
 
     } catch (error) {
-        // ✅ Use logger.error for crashes so it's recorded in audit.log
+        // Log the crash but keep the server alive
         logger.error("[CRASH PREVENTED]", error);
         
         // Fallback response to keep the judge happy
@@ -57,13 +57,15 @@ app.post('/api/honeypot', async (req, res) => {
     }
 });
 
-// Start Server
+// 3. Start Server
 const startServer = async () => {
+    // Connect to Database (Local or Atlas)
     await connectDB();
-    await warmUpKeys(); // 🔥 Pre-heat keys
+    
+    // Warm up Gemini Keys (to prevent cold-start lag)
+    await warmUpKeys(); 
     
     app.listen(PORT, () => {
-        // ✅ Use logger.success for startup
         logger.success(`🚀 Honeypot Active on Port ${PORT}`);
     });
 };

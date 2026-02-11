@@ -2,11 +2,13 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
     try {
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log("✅ MongoDB Connected");
-    } catch (err) {
-        console.error("❌ MongoDB Error:", err.message);
-        // Don't exit process, try to survive using in-memory only
+        // This command tells Node to grab the string from Render (or .env locally)
+        const conn = await mongoose.connect(process.env.MONGO_URI);
+
+        console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+    } catch (error) {
+        console.error(`❌ Error: ${error.message}`);
+        process.exit(1); // Stop the app if DB fails
     }
 };
 
