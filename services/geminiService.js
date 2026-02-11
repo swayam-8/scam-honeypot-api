@@ -12,7 +12,7 @@ const generateResponse = async (sessionId, userMessage, history) => {
 
         // 2. Configure the Model (FIXED: Uses v1beta)
         const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash",
+            model: "gemini-2.5-flash",
             systemInstruction: "You are a naive, non-technical elderly person. You are very polite but easily confused. You trust people but ask many simple, clarifying questions. You never give away real money or passwords, but you pretend you are trying to. Keep your responses short (under 2 sentences) and conversational."
         }, { 
             apiVersion: "v1beta" 
