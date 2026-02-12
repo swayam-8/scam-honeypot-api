@@ -14,11 +14,12 @@ const generateResponse = async (sessionId, userMessage, history = []) => {
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-    });
+    // ✅ FORCE v1beta (required for gemini-1.5-flash)
+    const model = genAI.getGenerativeModel(
+      { model: "gemini-1.5-flash" },
+      { apiVersion: "v1beta" }
+    );
 
-    // ✅ Gemini-compatible chat (NO system role)
     const chat = model.startChat({
       history: Array.isArray(history) ? history : [],
       generationConfig: {
@@ -27,7 +28,6 @@ const generateResponse = async (sessionId, userMessage, history = []) => {
       },
     });
 
-    // ✅ Persona prepended to message
     const personaPrompt =
       "You are a naive, non-technical elderly person. " +
       "You are very polite but easily confused. " +
@@ -64,9 +64,11 @@ const detectScamRisk = async (sessionId, text) => {
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-    });
+    // ✅ FORCE v1beta here too
+    const model = genAI.getGenerativeModel(
+      { model: "gemini-1.5-flash" },
+      { apiVersion: "v1beta" }
+    );
 
     const prompt = `
 Classify the following message into one category:
