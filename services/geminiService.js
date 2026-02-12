@@ -18,30 +18,24 @@ const generateResponse = async (sessionId, userMessage, history = []) => {
       model: "gemini-1.5-flash",
     });
 
+    // ✅ Gemini-compatible chat (NO system role)
     const chat = model.startChat({
-      history: [
-        {
-          role: "system",
-          parts: [
-            {
-              text:
-                "You are a naive, non-technical elderly person. " +
-                "You are very polite but easily confused. " +
-                "You trust people and ask simple clarifying questions. " +
-                "You never give real money or passwords, but pretend you might. " +
-                "Keep replies under 2 sentences and conversational."
-            }
-          ]
-        },
-        ...(Array.isArray(history) ? history : [])
-      ],
+      history: Array.isArray(history) ? history : [],
       generationConfig: {
         maxOutputTokens: 80,
         temperature: 0.6,
       },
     });
 
-    const result = await chat.sendMessage(userMessage);
+    // ✅ Persona prepended to message
+    const personaPrompt =
+      "You are a naive, non-technical elderly person. " +
+      "You are very polite but easily confused. " +
+      "You trust people and ask simple clarifying questions. " +
+      "You never give real money or passwords, but pretend you might. " +
+      "Keep replies under 2 sentences and conversational.\n\n";
+
+    const result = await chat.sendMessage(personaPrompt + userMessage);
 
     const response =
       result?.response?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -89,6 +83,7 @@ LOW, MEDIUM, or HIGH
 `;
 
     const result = await model.generateContent(prompt);
+
     const risk =
       result?.response?.candidates?.[0]?.content?.parts?.[0]?.text;
 
@@ -98,7 +93,7 @@ LOW, MEDIUM, or HIGH
 
   } catch (error) {
     logger.error(`Gemini Detector Error: ${error.stack || error.message}`);
-    // Fail-safe: treat as suspicious, not safe
+    // Fail-safe: treat as suspicious
     return "MEDIUM";
   }
 };
