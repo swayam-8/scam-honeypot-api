@@ -25,7 +25,7 @@ class KeyPool {
 
     // --- 👇 THIS WAS MISSING. I ADDED IT NOW. 👇 ---
     getAllKeys() {
-        return this.keys;
+        return [...this.keys];
     }
     // ---------------------------------------------
 
@@ -34,6 +34,11 @@ class KeyPool {
             return this.usedKeys.get(sessionId);
         }
         // Simple random load balancing
+        if (this.keys.length === 0) {
+            logger.error("No Gemini keys available for session assignment.");
+            return null;
+        }
+
         const key = this.keys[Math.floor(Math.random() * this.keys.length)];
         this.usedKeys.set(sessionId, key);
         return key;

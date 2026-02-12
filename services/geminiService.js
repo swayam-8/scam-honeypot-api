@@ -8,21 +8,34 @@ const logger = require('../utils/logger');
 
 const API_VERSION = process.env.GEMINI_API_VERSION || "v1";
 const PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || "gemini-1.5-flash-latest,gemini-1.5-flash")
+const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || "gemini-2.0-flash-lite")
     .split(",")
     .map(m => m.trim())
     .filter(Boolean);
 const MODEL_CANDIDATES = [PRIMARY_MODEL, ...FALLBACK_MODELS];
+const MAX_KEYS_TO_TRY = Number(process.env.GEMINI_MAX_KEYS_TO_TRY || 5);
 
 const buildUrl = (model, apiKey) =>
     `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
-const callGeminiAPI = async (apiKey, contents, systemInstruction = "") => {
+const maskKey = (key) => {
+    if (!key || key.length < 8) return "unknown";
+    return `${key.slice(0, 4)}...${key.slice(-4)}`;
+};
+
+const getKeyCandidates = (sessionId) => {
+    const primaryKey = keyPool.getKeyForSession(sessionId);
+    const pool = keyPool.getAllKeys ? keyPool.getAllKeys() : [];
+    const others = pool.filter(k => k && k !== primaryKey);
+    const candidates = [primaryKey, ...others].filter(Boolean);
+    return candidates.slice(0, Math.max(1, MAX_KEYS_TO_TRY));
+};
+
+const callGeminiAPI = async (apiKey, contents) => {
     
     // Construct the payload for the REST API
     const payload = {
         contents: contents,
-        systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
         generationConfig: {
             maxOutputTokens: 100,
             temperature: 0.7
@@ -48,14 +61,27 @@ const callGeminiAPI = async (apiKey, contents, systemInstruction = "") => {
     return null;
 };
 
+const callGeminiWithFallbackKeys = async (sessionId, contents) => {
+    const keys = getKeyCandidates(sessionId);
+    if (keys.length === 0) {
+        logger.error("Gemini REST API Failed: No API keys available.");
+        return null;
+    }
+
+    for (const key of keys) {
+        const reply = await callGeminiAPI(key, contents);
+        if (reply) return reply;
+        logger.warn(`Gemini key failed, trying next key: ${maskKey(key)}`);
+    }
+
+    return null;
+};
+
 /**
  * AGENT MODE (Human-like replies)
  */
 const generateResponse = async (sessionId, userMessage, history = []) => {
     try {
-        const apiKey = keyPool.getKeyForSession(sessionId);
-        if (!apiKey) throw new Error("No available API keys.");
-
         // 1. Setup the Persona (System Instruction)
         const persona = 
             "You are a naive, non-technical elderly person. " +
@@ -63,19 +89,21 @@ const generateResponse = async (sessionId, userMessage, history = []) => {
             "You never give real money, but you pretend to be interested. " +
             "Keep your replies short (1-2 sentences).";
 
-        // 2. Format History for REST API
-        // If history is empty, we just send the new message
+        // 2. Format request for REST API (persona included in text for compatibility)
         let contents = [];
-        
-        // (Optional: Add history formatting here if your database stores it strictly)
-        // For now, we just send the user message to keep it simple and robust
+
+        const promptWithPersona =
+            `SYSTEM ROLE:\n${persona}\n\n` +
+            `USER MESSAGE:\n${userMessage}\n\n` +
+            `Reply naturally in 1-2 short sentences.`;
+
         contents.push({
             role: "user",
-            parts: [{ text: userMessage }]
+            parts: [{ text: promptWithPersona }]
         });
 
         // 3. Call the API
-        const reply = await callGeminiAPI(apiKey, contents, persona);
+        const reply = await callGeminiWithFallbackKeys(sessionId, contents);
 
         if (!reply) throw new Error("Empty response from API");
         return reply.trim();
@@ -92,9 +120,6 @@ const generateResponse = async (sessionId, userMessage, history = []) => {
  */
 const detectScamRisk = async (sessionId, text) => {
     try {
-        const apiKey = keyPool.getKeyForSession(sessionId);
-        if (!apiKey) return "MEDIUM";
-
         const prompt = `
         Classify this message as LOW, MEDIUM, or HIGH risk.
         Message: "${text}"
@@ -105,7 +130,7 @@ const detectScamRisk = async (sessionId, text) => {
             parts: [{ text: prompt }]
         }];
 
-        const risk = await callGeminiAPI(apiKey, contents);
+        const risk = await callGeminiWithFallbackKeys(sessionId, contents);
         return risk ? risk.trim().toUpperCase() : "MEDIUM";
 
     } catch (error) {

@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const connectDB = require('./config/db'); 
+const keyPool = require('./config/keyPool');
 const sessionManager = require('./services/sessionManager');
 const warmUpKeys = require('./utils/warmUp');
 const logger = require('./utils/logger'); 
@@ -38,7 +39,13 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: "active", 
         port: PORT,
-        time: new Date().toISOString() 
+        time: new Date().toISOString(),
+        gemini: {
+            apiVersion: process.env.GEMINI_API_VERSION || "v1",
+            model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+            fallbackModels: process.env.GEMINI_FALLBACK_MODELS || "gemini-1.5-flash-latest,gemini-1.5-flash",
+            keyCount: keyPool.getAllKeys().length
+        }
     });
 });
 

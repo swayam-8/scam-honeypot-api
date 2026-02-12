@@ -3,34 +3,29 @@ const keyPool = require('../config/keyPool');
 const logger = require('./logger');
 
 module.exports = async () => {
-    logger.info("🔥 Warming up keys...");
+    logger.info("Warming up keys...");
 
     try {
-        // Get first 5 keys to test (requires the getAllKeys fix we did earlier)
-        const keys = keyPool.getAllKeys().slice(0, 5); 
+        const keys = keyPool.getAllKeys().slice(0, 5);
+        const apiVersion = process.env.GEMINI_API_VERSION || "v1";
+        const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 
         const promises = keys.map(async (key) => {
             try {
                 const genAI = new GoogleGenerativeAI(key);
-                
-                // ⚠️ FIX: Using v1beta for Gemini 1.5 Flash
-                const model = genAI.getGenerativeModel({ 
-                    model: "gemini-1.5-flash" 
-                }, { 
-                    apiVersion: "v1beta" 
-                });
-
-                // Send a tiny request to wake up the connection
+                const model = genAI.getGenerativeModel(
+                    { model: modelName },
+                    { apiVersion }
+                );
                 await model.generateContent("ping");
             } catch (err) {
-                // If one key fails, just ignore it so the server still starts
-                // logger.warn(`Warmup failed for a key: ${err.message}`);
+                // Ignore per-key warmup errors so startup remains resilient.
             }
         });
 
         await Promise.all(promises);
-        logger.success("✅ Keys Ready.");
+        logger.success("Keys Ready.");
     } catch (error) {
-        logger.error(`❌ Warmup failed (System): ${error.message}`);
+        logger.error(`Warmup failed (System): ${error.message}`);
     }
 };
