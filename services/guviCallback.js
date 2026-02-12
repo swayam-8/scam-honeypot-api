@@ -4,18 +4,23 @@ exports.sendReport = async (data) => {
     const payload = {
         sessionId: data.sessionId,
         scamDetected: data.scamDetected,
-        totalMessagesExchanged: data.totalMessages,
-        extractedIntelligence: data.intelligence,
-        agentNotes: data.notes || "Automated scam engagement completed."
+        totalMessagesExchanged: data.totalMessagesExchanged ?? data.totalMessages ?? 0,
+        extractedIntelligence: data.extractedIntelligence ?? data.intelligence ?? {},
+        agentNotes: data.agentNotes ?? data.notes ?? "Automated scam engagement completed."
     };
 
     try {
         await axios.post('https://hackathon.guvi.in/api/updateHoneyPotFinalResult', payload, {
-            timeout: 3000 // 3s timeout
+            timeout: 3000
         });
-        console.log("✅ GUVI Callback Sent Successfully");
+        console.log("GUVI Callback Sent Successfully");
     } catch (error) {
-        console.error("❌ GUVI Callback Failed:", error.message);
-        // We log it but don't crash, the session will still be cleaned up
+        const status = error.response?.status;
+        const details = error.response?.data;
+        console.error(
+            "GUVI Callback Failed:",
+            status ? `${status} ${error.message}` : error.message,
+            details || ""
+        );
     }
 };

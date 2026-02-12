@@ -6,9 +6,18 @@ const logger = require('../utils/logger');
 // 🚀 REST API VERSION (Bypasses Library Errors)
 // -----------------------------------------------------------
 
+const API_VERSION = process.env.GEMINI_API_VERSION || "v1";
+const PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || "gemini-1.5-flash-latest,gemini-1.5-flash")
+    .split(",")
+    .map(m => m.trim())
+    .filter(Boolean);
+const MODEL_CANDIDATES = [PRIMARY_MODEL, ...FALLBACK_MODELS];
+
+const buildUrl = (model, apiKey) =>
+    `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
+
 const callGeminiAPI = async (apiKey, contents, systemInstruction = "") => {
-    // We manually type the URL for Gemini 1.5 Flash
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
     
     // Construct the payload for the REST API
     const payload = {
@@ -20,19 +29,23 @@ const callGeminiAPI = async (apiKey, contents, systemInstruction = "") => {
         }
     };
 
-    try {
-        const response = await axios.post(url, payload, {
-            headers: { 'Content-Type': 'application/json' }
-        });
+    for (const model of MODEL_CANDIDATES) {
+        const url = buildUrl(model, apiKey);
+        try {
+            const response = await axios.post(url, payload, {
+                headers: { 'Content-Type': 'application/json' }
+            });
 
-        // Safe extraction of the reply
-        return response.data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    } catch (error) {
-        // Log the exact error from Google (very helpful for debugging)
-        const errorMessage = error.response?.data?.error?.message || error.message;
-        logger.error(`Gemini REST API Failed: ${errorMessage}`);
-        return null;
+            // Safe extraction of the reply
+            return response.data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+        } catch (error) {
+            // Log model-specific failure and continue to the next candidate model.
+            const errorMessage = error.response?.data?.error?.message || error.message;
+            logger.error(`Gemini REST API Failed [${API_VERSION}/${model}]: ${errorMessage}`);
+        }
     }
+
+    return null;
 };
 
 /**

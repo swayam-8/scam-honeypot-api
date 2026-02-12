@@ -106,7 +106,7 @@ exports.processRequest = async (payload) => {
 
             // Cleanup
             activeSessions.delete(sessionId);
-            keyPool.releaseKey(session.geminiKey);
+            keyPool.releaseKey(sessionId);
             await Session.deleteOne({ sessionId });
 
             logger.success(`[CLEANUP] Session ${sessionId} destroyed`);
