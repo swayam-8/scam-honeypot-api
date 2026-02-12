@@ -2,18 +2,21 @@ const axios = require('axios');
 const keyPool = require('../config/keyPool');
 const logger = require('../utils/logger');
 
-// -----------------------------------------------------------
-// 🚀 REST API VERSION (Bypasses Library Errors)
-// -----------------------------------------------------------
-
 const API_VERSION = process.env.GEMINI_API_VERSION || "v1";
-const PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || "gemini-2.0-flash-lite")
-    .split(",")
-    .map(m => m.trim())
-    .filter(Boolean);
-const MODEL_CANDIDATES = [PRIMARY_MODEL, ...FALLBACK_MODELS];
 const MAX_KEYS_TO_TRY = Number(process.env.GEMINI_MAX_KEYS_TO_TRY || 5);
+const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 5000);
+const QUOTA_BACKOFF_MS = Number(process.env.GEMINI_QUOTA_BACKOFF_MS || 30 * 60 * 1000);
+const MODELS = (
+    process.env.GEMINI_MODELS ||
+    (API_VERSION === "v1beta"
+        ? "gemini-1.5-flash,gemini-1.5-pro,gemini-pro,gemini-1.0-pro"
+        : "gemini-2.0-flash,gemini-2.0-flash-lite")
+)
+    .split(",")
+    .map(model => model.trim())
+    .filter(Boolean);
+
+const quotaBackoffUntil = new Map();
 
 const buildUrl = (model, apiKey) =>
     `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
@@ -23,42 +26,61 @@ const maskKey = (key) => {
     return `${key.slice(0, 4)}...${key.slice(-4)}`;
 };
 
+const isQuotaError = (message = "") =>
+    /quota exceeded|resource_exhausted|limit:\s*0/i.test(message);
+
+const isKeyInBackoff = (key) => {
+    const until = quotaBackoffUntil.get(key);
+    return typeof until === "number" && until > Date.now();
+};
+
+const markKeyInBackoff = (key, reason) => {
+    quotaBackoffUntil.set(key, Date.now() + QUOTA_BACKOFF_MS);
+    logger.warn(`Gemini key in backoff: ${maskKey(key)} | ${reason}`);
+};
+
 const getKeyCandidates = (sessionId) => {
     const primaryKey = keyPool.getKeyForSession(sessionId);
-    const pool = keyPool.getAllKeys ? keyPool.getAllKeys() : [];
-    const others = pool.filter(k => k && k !== primaryKey);
-    const candidates = [primaryKey, ...others].filter(Boolean);
-    return candidates.slice(0, Math.max(1, MAX_KEYS_TO_TRY));
+    const allKeys = keyPool.getAllKeys ? keyPool.getAllKeys() : [];
+    const ordered = [primaryKey, ...allKeys.filter(key => key && key !== primaryKey)].filter(Boolean);
+    const active = ordered.filter(key => !isKeyInBackoff(key));
+    const selected = active.length > 0 ? active : ordered;
+    return selected.slice(0, Math.max(1, MAX_KEYS_TO_TRY));
 };
 
 const callGeminiAPI = async (apiKey, contents) => {
-    
-    // Construct the payload for the REST API
     const payload = {
-        contents: contents,
+        contents,
         generationConfig: {
             maxOutputTokens: 100,
             temperature: 0.7
         }
     };
 
-    for (const model of MODEL_CANDIDATES) {
-        const url = buildUrl(model, apiKey);
+    let quotaHit = false;
+    let lastError = "Unknown Gemini failure";
+
+    for (const model of MODELS) {
         try {
-            const response = await axios.post(url, payload, {
-                headers: { 'Content-Type': 'application/json' }
+            const response = await axios.post(buildUrl(model, apiKey), payload, {
+                headers: { "Content-Type": "application/json" },
+                timeout: REQUEST_TIMEOUT_MS
             });
 
-            // Safe extraction of the reply
-            return response.data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+            const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (reply) {
+                return { reply, quotaHit: false, lastError: null };
+            }
         } catch (error) {
-            // Log model-specific failure and continue to the next candidate model.
-            const errorMessage = error.response?.data?.error?.message || error.message;
-            logger.error(`Gemini REST API Failed [${API_VERSION}/${model}]: ${errorMessage}`);
+            const status = error.response?.status;
+            const message = error.response?.data?.error?.message || error.message;
+            lastError = message;
+            if (isQuotaError(message)) quotaHit = true;
+            logger.warn(`Gemini model failed [${API_VERSION}/${model}] (${status || "no-status"}): ${message}`);
         }
     }
 
-    return null;
+    return { reply: null, quotaHit, lastError };
 };
 
 const callGeminiWithFallbackKeys = async (sessionId, contents) => {
@@ -69,62 +91,51 @@ const callGeminiWithFallbackKeys = async (sessionId, contents) => {
     }
 
     for (const key of keys) {
-        const reply = await callGeminiAPI(key, contents);
-        if (reply) return reply;
+        const result = await callGeminiAPI(key, contents);
+        if (result.reply) return result.reply;
+        if (result.quotaHit) markKeyInBackoff(key, result.lastError);
         logger.warn(`Gemini key failed, trying next key: ${maskKey(key)}`);
     }
 
     return null;
 };
 
-/**
- * AGENT MODE (Human-like replies)
- */
 const generateResponse = async (sessionId, userMessage, history = []) => {
     try {
-        // 1. Setup the Persona (System Instruction)
-        const persona = 
+        const persona =
             "You are a naive, non-technical elderly person. " +
             "You are polite but easily confused. " +
             "You never give real money, but you pretend to be interested. " +
             "Keep your replies short (1-2 sentences).";
 
-        // 2. Format request for REST API (persona included in text for compatibility)
-        let contents = [];
+        const trimmedHistory = Array.isArray(history) ? history.slice(-4) : [];
+        const historyText = trimmedHistory
+            .map(msg => `${msg.role === "model" ? "ASSISTANT" : "USER"}: ${msg.parts?.[0]?.text || ""}`)
+            .join("\n");
 
-        const promptWithPersona =
+        const prompt =
             `SYSTEM ROLE:\n${persona}\n\n` +
+            (historyText ? `RECENT CHAT:\n${historyText}\n\n` : "") +
             `USER MESSAGE:\n${userMessage}\n\n` +
-            `Reply naturally in 1-2 short sentences.`;
+            "Reply naturally in 1-2 short sentences.";
 
-        contents.push({
+        const contents = [{
             role: "user",
-            parts: [{ text: promptWithPersona }]
-        });
+            parts: [{ text: prompt }]
+        }];
 
-        // 3. Call the API
         const reply = await callGeminiWithFallbackKeys(sessionId, contents);
-
-        if (!reply) throw new Error("Empty response from API");
+        if (!reply) throw new Error("All Gemini models or keys failed.");
         return reply.trim();
-
     } catch (error) {
         logger.error(`Gemini Agent Error: ${error.message}`);
-        // ⚠️ FALLBACK: If AI fails, return this text so the tester sees a reply
         return "Oh dear, my internet is acting up. Could you say that again?";
     }
 };
 
-/**
- * DETECTOR MODE (Scam risk scoring)
- */
 const detectScamRisk = async (sessionId, text) => {
     try {
-        const prompt = `
-        Classify this message as LOW, MEDIUM, or HIGH risk.
-        Message: "${text}"
-        Reply with ONLY ONE WORD.`;
-
+        const prompt = `Classify this message as LOW, MEDIUM, or HIGH risk. Message: "${text}". Reply with ONLY ONE WORD.`;
         const contents = [{
             role: "user",
             parts: [{ text: prompt }]
@@ -132,7 +143,6 @@ const detectScamRisk = async (sessionId, text) => {
 
         const risk = await callGeminiWithFallbackKeys(sessionId, contents);
         return risk ? risk.trim().toUpperCase() : "MEDIUM";
-
     } catch (error) {
         logger.error(`Gemini Detector Error: ${error.message}`);
         return "MEDIUM";
